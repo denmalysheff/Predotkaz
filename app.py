@@ -7,15 +7,15 @@ import datetime
 st.set_page_config(page_title="Комбайн-П: Предотказ", layout="wide")
 
 st.title("🚂 Модуль «Комбайн-П: Предотказ»")
-st.markdown("### Анализ сезонных рисков геометрии пути на основе архивных отчетов Excel")
+st.markdown("### Анализ сезонных рисков геометрии пути на основе листов «Оценка КМ» и «Отступления»")
 
-# --- ФУНКЦИИ ЗАГРУЗКИ И ДЕМО-ДАННЫХ ---
+# --- ФУНКЦИИ ГЕНЕРАЦИИ ДЕМО-ДАННЫХ ---
 @st.cache_data
 def get_demo_data():
-    """Генерация тестовых данных, строго повторяющих структуру файлов пользователя"""
+    """Генерация тестовых данных, строго повторяющих структуру листов пользователя"""
     np.random.seed(42)
     
-    # 1. Имитация "Оценка КМ"
+    # 1. Имитация листа "Оценка КМ"
     km_rows = []
     directions = [24602, 91022700, 91031600]
     months = [4, 5, 6]  # Апрель, Май, Июнь
@@ -40,7 +40,7 @@ def get_demo_data():
                         })
     df_km = pd.DataFrame(km_rows)
     
-    # 2. Имитация "Отступления"
+    # 2. Имитация листа "Отступления"
     otst_rows = []
     types = ['Просадка', 'Уширение', 'Рихтовка', 'Перекос']
     for idx, row in df_km.iterrows():
@@ -59,18 +59,32 @@ def get_demo_data():
     df_otst = pd.DataFrame(otst_rows)
     return df_km, df_otst
 
-# --- БОКОВАЯ ПАНЕЛЬ С ВЫБОРОМ EXCEL ---
-st.sidebar.header("📁 Загрузка архивных Excel (.xlsx)")
-uploaded_km = st.sidebar.file_uploader("Шаг 1: Файл 'Оценка КМ'", type=["xlsx"])
-uploaded_otst = st.sidebar.file_uploader("Шаг 2: Файл 'Отступления'", type=["xlsx"])
+# --- БОКОВАЯ ПАНЕЛЬ С ВЫБОРОМ ОДНОГО ФАЙЛА EXCEL ---
+st.sidebar.header("📁 Загрузка файла путеизмерителя")
+uploaded_file = st.sidebar.file_uploader("Выберите файл Excel (.xlsx)", type=["xlsx"])
 
-if uploaded_km and uploaded_otst:
+df_km_raw = None
+df_otst_raw = None
+
+if uploaded_file:
     try:
-        # Читаем файлы Excel. 
-        # Если ваши данные лежат не на первом листе, можно добавить параметр sheet_name='ИмяЛиста'
-        df_km_raw = pd.read_excel(uploaded_km)
-        df_otst_raw = pd.read_excel(uploaded_otst)
-        st.sidebar.success("Файлы Excel успешно загружены!")
+        # Сначала проверяем, какие листы есть в файле
+        excel_file = pd.ExcelFile(uploaded_file)
+        sheet_names = excel_file.sheet_names
+        
+        # Поиск нужных листов (с игнорированием регистра букв и пробелов)
+        target_km_sheet = next((s for s in sheet_names if s.strip().lower() == "оценка км"), None)
+        target_otst_sheet = next((s for s in sheet_names if s.strip().lower() == "отступления"), None)
+        
+        if target_km_sheet and target_otst_sheet:
+            df_km_raw = pd.read_excel(uploaded_file, sheet_name=target_km_sheet)
+            df_otst_raw = pd.read_excel(uploaded_file, sheet_name=target_otst_sheet)
+            st.sidebar.success("🎉 Успешно! Найдены листы 'Оценка КМ' и 'Отступления'")
+        else:
+            st.sidebar.error("❌ В файле отсутствуют листы 'Оценка КМ' или 'Отступления'.")
+            st.sidebar.info("Доступные листы в файле: " + ", ".join(sheet_names))
+            df_km_raw, df_otst_raw = get_demo_data()
+            
     except Exception as e:
         st.sidebar.error(f"Ошибка чтения Excel: {e}. Загружены демо-данные.")
         df_km_raw, df_otst_raw = get_demo_data()
@@ -93,7 +107,7 @@ df_otst_raw.columns = df_otst_raw.columns.str.strip().str.upper()
 if 'КОДНАПРВ' in df_otst_raw.columns:
     df_otst_raw = df_otst_raw.rename(columns={'КОДНАПРВ': 'КОДНАПР'})
 
-# Принудительно переводим ключевые координаты в числа (на случай, если в Excel они определились как текст)
+# Принудительно переводим ключевые координаты в числа
 for df in [df_km_raw, df_otst_raw]:
     for col in ['КОДНАПР', 'ПУТЬ', 'KM', 'МЕСЯЦ']:
         if col in df.columns:
@@ -158,7 +172,7 @@ else:
         ].copy()
         
         if km_defects.empty:
-            st.info("💡 Для данного километра нет детализированных записей по отдельным отступлениям в таблице 'Отступления'. Используйте общую статистику баллов.")
+            st.info("💡 Для данного километра нет детализированных записей по отдельным отступлениям в листе 'Отступления'. Используйте общую статистику баллов.")
         else:
             if 'ОТСТУПЛЕНИЕ' in km_defects.columns:
                 km_defects['ОТСТУПЛЕНИЕ'] = km_defects['ОТСТУПЛЕНИЕ'].astype(str).str.strip()
