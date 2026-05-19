@@ -7,7 +7,7 @@ import datetime
 st.set_page_config(page_title="Комбайн-П: Предотказ", layout="wide")
 
 st.title("🚂 Модуль «Комбайн-П: Предотказ»")
-st.markdown("### Анализ сезонных рисков геометрии пути на основе листов «Оценка КМ» и «Отступления»")
+st.markdown("### Предиктивный анализ сезонных рисков на основе архива файлов Excel")
 
 # --- ФУНКЦИИ ГЕНЕРАЦИИ ДЕМО-ДАННЫХ ---
 @st.cache_data
@@ -58,32 +58,44 @@ def get_demo_data():
     df_otst = pd.DataFrame(otst_rows)
     return df_km, df_otst
 
-# --- БОКОВАЯ ПАНЕЛЬ С ВЫБОРОМ ОДНОГО ФАЙЛА EXCEL ---
-st.sidebar.header("📁 Загрузка файла путеизмерителя")
-uploaded_file = st.sidebar.file_uploader("Выберите файл Excel (.xlsx)", type=["xlsx"])
+# --- БОКОВАЯ ПАНЕЛЬ С МУЛЬТИЗАГРУЗКОЙ EXCEL ---
+st.sidebar.header("📁 Архив путеизмерителя")
+uploaded_files = st.sidebar.file_uploader(
+    "Выберите один или несколько файлов Excel (.xlsx):", 
+    type=["xlsx"], 
+    accept_multiple_files=True
+)
 
-df_km_raw = None
-df_otst_raw = None
+km_list = []
+otst_list = []
 
-if uploaded_file:
-    try:
-        excel_file = pd.ExcelFile(uploaded_file)
-        sheet_names = excel_file.sheet_names
-        
-        target_km_sheet = next((s for s in sheet_names if s.strip().lower() == "оценка км"), None)
-        target_otst_sheet = next((s for s in sheet_names if s.strip().lower() == "отступления"), None)
-        
-        if target_km_sheet and target_otst_sheet:
-            df_km_raw = pd.read_excel(uploaded_file, sheet_name=target_km_sheet)
-            df_otst_raw = pd.read_excel(uploaded_file, sheet_name=target_otst_sheet)
-            st.sidebar.success("🎉 Успешно! Найдены листы 'Оценка КМ' и 'Отступления'")
-        else:
-            st.sidebar.error("❌ В файле отсутствуют листы 'Оценка КМ' или 'Отступления'.")
-            st.sidebar.info("Доступные листы в файле: " + ", ".join(sheet_names))
-            df_km_raw, df_otst_raw = get_demo_data()
+if uploaded_files:
+    success_count = 0
+    for f in uploaded_files:
+        try:
+            excel_file = pd.ExcelFile(f)
+            sheet_names = excel_file.sheet_names
             
-    except Exception as e:
-        st.sidebar.error(f"Ошибка чтения Excel: {e}. Загружены демо-данные.")
+            # Поиск нужных вкладок (независимо от пробелов и регистра)
+            target_km_sheet = next((s for s in sheet_names if s.strip().lower() == "оценка км"), None)
+            target_otst_sheet = next((s for s in sheet_names if s.strip().lower() == "отступления"), None)
+            
+            if target_km_sheet and target_otst_sheet:
+                df_km_single = pd.read_excel(f, sheet_name=target_km_sheet)
+                df_otst_single = pd.read_excel(f, sheet_name=target_otst_sheet)
+                
+                km_list.append(df_km_single)
+                otst_list.append(df_otst_single)
+                success_count += 1
+        except Exception as e:
+            st.sidebar.error(f"Ошибка при обработке файла {f.name}: {e}")
+            
+    if success_count > 0:
+        st.sidebar.success(f"📊 Успешно объединено файлов: {success_count} шт.")
+        df_km_raw = pd.concat(km_list, ignore_index=True)
+        df_otst_raw = pd.concat(otst_list, ignore_index=True)
+    else:
+        st.sidebar.error("❌ Ни в одном файле не найдены листы 'Оценка КМ' и 'Отступления'.")
         df_km_raw, df_otst_raw = get_demo_data()
 else:
     st.sidebar.info("Используются встроенные демонстрационные данные для ПЧ-22.")
@@ -106,16 +118,16 @@ if 'КОДНАПРВ' in df_otst_raw.columns:
 
 # Принудительно переводим ключевые координаты в числа
 for df in [df_km_raw, df_otst_raw]:
-    for col in ['КОДНАПР', 'ПУТЬ', 'KM', 'МЕСЯЦ']:
+    for col in ['КОДНАПР', 'ПУТЬ', 'KM', 'МЕСЯЦ', 'БАЛЛ']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
-# Фильтруем исторические данные по выбранному месяцу
+# Фильтруем объединенные исторические данные по выбранному прогнозируемому месяцу
 hist_km = df_km_raw[df_km_raw['МЕСЯЦ'] == current_month].dropna(subset=['КОДНАПР', 'ПУТЬ', 'KM', 'БАЛЛ'])
 hist_otst = df_otst_raw[df_otst_raw['МЕСЯЦ'] == current_month].dropna(subset=['КОДНАПР', 'ПУТЬ', 'KM'])
 
 if hist_km.empty:
-    st.warning(f"В базе данных нет исторических записей для месяца № {current_month}.")
+    st.warning(f"⚠️ В загруженном архиве нет исторических записей для месяца № {current_month}.")
 else:
     # Строим профиль километров на основе таблицы "Оценка КМ"
     km_profile = hist_km.groupby(['КОДНАПР', 'ПУТЬ', 'KM']).agg(
@@ -137,7 +149,7 @@ else:
     with c1:
         st.metric(label="Найдено км в зоне риска предотказа", value=len(dangerous_kms))
     with c2:
-        st.success(f"Анализ проведен по архиву из {int(km_profile['Кол_Проверок'].max())} проверок.")
+        st.success(f"Анализ проведен по архиву из {int(km_profile['Кол_Проверок'].sum())} суммарных проверок километров.")
 
     if dangerous_kms.empty:
         st.success("🎉 Исторических аномалий для этого периода не обнаружено. Все участки стабильны!")
@@ -161,7 +173,7 @@ else:
         
         sel_row = dangerous_kms[dangerous_kms['label'] == selected_label].iloc[0]
         
-        # Выгружаем точечные отступления для выбранного КМ
+        # Выгружаем точечные отступления для выбранного КМ из общего массива
         km_defects = hist_otst[
             (hist_otst['КОДНАПР'] == sel_row['КОДНАПР']) & 
             (hist_otst['ПУТЬ'] == sel_row['ПУТЬ']) & 
@@ -169,7 +181,7 @@ else:
         ].copy()
         
         if km_defects.empty:
-            st.info("💡 Для данного километра нет детализированных записей по отдельным отступлениям в листе 'Отступления'. Используйте общую статистику баллов.")
+            st.info("💡 Для данного километра нет детализированных записей по отдельным отступлениям в листах 'Отступления'. Используйте общую статистику баллов.")
         else:
             if 'ОТСТУПЛЕНИЕ' in km_defects.columns:
                 km_defects['ОТСТУПЛЕНИЕ'] = km_defects['ОТСТУПЛЕНИЕ'].astype(str).str.strip()
@@ -178,13 +190,11 @@ else:
             
             with dl:
                 st.markdown("**Характерные виды неисправностей (по сумме баллов):**")
-                # Расчет структуры делаем по скрытым неизменным именам колонок
                 structure = km_defects.groupby('ОТСТУПЛЕНИЕ', as_index=False).agg(
                     Суммарный_Балл=('БАЛЛ', 'sum'),
                     Количество_Случаев=('ОТСТУПЛЕНИЕ', 'count')
                 ).sort_values(by='Суммарный_Балл', ascending=False)
                 
-                # Выводим на экран переименованную копию, чтобы не ломать логику кода
                 st.dataframe(structure.rename(columns={
                     'ОТСТУПЛЕНИЕ': 'Вид неисправности', 
                     'Суммарный_Балл': 'Набрано баллов', 
@@ -202,7 +212,6 @@ else:
                 density['Интервал (м)'] = density['Участок_Метры'].astype(int).astype(str) + " - " + (density['Участок_Метры'] + 100).astype(int).astype(str)
                 st.dataframe(density[['Интервал (м)', 'Баллы', 'Количество']].rename(columns={'Баллы': 'Сумма баллов', 'Количество': 'Кол-во дефектов'}), use_container_width=True, hide_index=True)
 
-            # Теперь безопасный запуск без KeyError
             if not structure.empty and not density.empty:
                 main_threat = structure.iloc[0]['ОТСТУПЛЕНИЕ']
                 crit_meters = density.iloc[0]['Интервал (м)']
