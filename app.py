@@ -26,7 +26,6 @@ def get_demo_data():
             for day in [8, 22]:  # Два прохода в месяц
                 for d_kod in directions:
                     for km in range(2320, 2335):
-                        # Делаем 2328-й км на направлении 24602 хронически больным в мае
                         if km == 2328 and d_kod == 24602 and mn == 5:
                             ball = np.random.randint(95, 150)
                             rating = 'У'
@@ -68,11 +67,9 @@ df_otst_raw = None
 
 if uploaded_file:
     try:
-        # Сначала проверяем, какие листы есть в файле
         excel_file = pd.ExcelFile(uploaded_file)
         sheet_names = excel_file.sheet_names
         
-        # Поиск нужных листов (с игнорированием регистра букв и пробелов)
         target_km_sheet = next((s for s in sheet_names if s.strip().lower() == "оценка км"), None)
         target_otst_sheet = next((s for s in sheet_names if s.strip().lower() == "отступления"), None)
         
@@ -181,25 +178,33 @@ else:
             
             with dl:
                 st.markdown("**Характерные виды неисправностей (по сумме баллов):**")
-                structure = km_defects.groupby('ОТСТУПЛЕНИЕ').agg(
+                # Расчет структуры делаем по скрытым неизменным именам колонок
+                structure = km_defects.groupby('ОТСТУПЛЕНИЕ', as_index=False).agg(
                     Суммарный_Балл=('БАЛЛ', 'sum'),
                     Количество_Случаев=('ОТСТУПЛЕНИЕ', 'count')
-                ).sort_values(by='Суммарный_Балл', ascending=False).reset_index()
-                st.dataframe(structure.rename(columns={'ОТСТУПЛЕНИЕ': 'Вид неисправности', 'Суммарный_Балл': 'Набрано баллов', 'Количество_Случаев': 'Кол-во случаев'}), use_container_width=True, hide_index=True)
+                ).sort_values(by='Суммарный_Балл', ascending=False)
+                
+                # Выводим на экран переименованную копию, чтобы не ломать логику кода
+                st.dataframe(structure.rename(columns={
+                    'ОТСТУПЛЕНИЕ': 'Вид неисправности', 
+                    'Суммарный_Балл': 'Набрано баллов', 
+                    'Количество_Случаев': 'Кол-во случаев'
+                }), use_container_width=True, hide_index=True)
                 
             with dr:
                 st.markdown("**Критические участки километра (Привязка к метрам):**")
                 km_defects['Участок_Метры'] = (km_defects['М'] // 100) * 100
-                density = km_defects.groupby('Участок_Метры').agg(
+                density = km_defects.groupby('Участок_Метры', as_index=False).agg(
                     Баллы=('БАЛЛ', 'sum'),
                     Количество=('БАЛЛ', 'count')
-                ).sort_values(by='Баллы', ascending=False).reset_index()
+                ).sort_values(by='Баллы', ascending=False)
                 
                 density['Интервал (м)'] = density['Участок_Метры'].astype(int).astype(str) + " - " + (density['Участок_Метры'] + 100).astype(int).astype(str)
                 st.dataframe(density[['Интервал (м)', 'Баллы', 'Количество']].rename(columns={'Баллы': 'Сумма баллов', 'Количество': 'Кол-во дефектов'}), use_container_width=True, hide_index=True)
 
+            # Теперь безопасный запуск без KeyError
             if not structure.empty and not density.empty:
-                main_threat = structure.iloc[0]['Вид неисправности']
+                main_threat = structure.iloc[0]['ОТСТУПЛЕНИЕ']
                 crit_meters = density.iloc[0]['Интервал (м)']
                 st.warning(f"📋 **Рекомендация для дорожного мастера:** На {int(sel_row['KM'])} км в этом месяце ожидается ухудшение пути. "
                            f"Выдайте задание бригадиру (ПДБ) проверить в первую очередь интервал **{crit_meters} метров**. "
