@@ -6,23 +6,40 @@ import io
 import gc
 
 # Настройка страницы Streamlit
-st.set_page_config(page_title="Комбайн-П: Экспорт", layout="wide")
+st.set_page_config(page_title="Комбайн-П: Таймлайн", layout="wide")
 
 st.title("🚂 Модуль «Комбайн-П: Аналитический Конвейер»")
-st.markdown("### Сверхбыстрая обработка больших архивов с выгрузкой предиктивных отчетов в Excel")
+st.markdown("### Предиктивный анализ по декадам и месяцам (с поддержкой ретро-тестирования)")
+
+# --- ОПРЕДЕЛЕНИЕ ТЕКУЩЕГО И СЛЕДУЮЩЕГО ПЕРИОДА ПО УМОЛЧАНИЮ ---
+now = datetime.datetime.now()
+current_year = now.year
+current_month = now.month
+current_day = now.day
+
+# Логика автоматического определения СЛЕДУЮЩЕЙ декады для анализа на опережение
+if current_day <= 10:
+    default_dekada = "2 декада (11-20 число)"
+    default_month = current_month
+elif current_day <= 20:
+    default_dekada = "3 декада (21-31 число)"
+    default_month = current_month
+else:
+    default_dekada = "1 декада (1-10 число)"
+    default_month = current_month + 1 if current_month < 12 else 1
 
 # --- БОКОВАЯ ПАНЕЛЬ С МУЛЬТИЗАГРУЗКОЙ ---
 st.sidebar.header("📁 Архив путеизмерителя")
 uploaded_files = st.sidebar.file_uploader(
-    "Выберите файлы Excel (.xlsx) для глубокого анализа:", 
+    "Выберите файлы Excel (.xlsx) для загрузки в базу:", 
     type=["xlsx"], 
     accept_multiple_files=True
 )
 
-REQUIRED_KM_COLS = ['ГОД', 'МЕСЯЦ', 'КОДНАПР', 'ПУТЬ', 'KM', 'БАЛЛ', 'ПД']
-REQUIRED_OTST_COLS = ['ГОД', 'МЕСЯЦ', 'КОДНАПР', 'ПУТЬ', 'KM', 'М', 'ОТСТУПЛЕНИЕ', 'БАЛЛ']
+# Расширяем список необходимых колонок, добавляя 'ДЕНЬ'
+REQUIRED_KM_COLS = ['ГОД', 'МЕСЯЦ', 'ДЕНЬ', 'КОДНАПР', 'ПУТЬ', 'KM', 'БАЛЛ', 'ПД']
+REQUIRED_OTST_COLS = ['ГОД', 'МЕСЯЦ', 'ДЕНЬ', 'КОДНАПР', 'ПУТЬ', 'KM', 'М', 'ОТСТУПЛЕНИЕ', 'БАЛЛ']
 
-# Инициализация переменных в сессии, чтобы данные не сбрасывались при переключении кнопок
 if 'df_km_all' not in st.session_state:
     st.session_state.df_km_all = None
 if 'df_otst_all' not in st.session_state:
@@ -64,10 +81,10 @@ if uploaded_files:
                     if 'КОДНАПРВ' in df_otst_single.columns:
                         df_otst_single = df_otst_single.rename(columns={'КОДНАПРВ': 'КОДНАПР'})
                     
-                    for col in ['ГОД', 'МЕСЯЦ', 'ПУТЬ', 'KM', 'БАЛЛ', 'ПД']:
+                    for col in ['ГОД', 'МЕСЯЦ', 'ДЕНЬ', 'ПУТЬ', 'KM', 'БАЛЛ', 'ПД']:
                         if col in df_km_single.columns:
                             df_km_single[col] = pd.to_numeric(df_km_single[col], errors='coerce')
-                    for col in ['ГОД', 'МЕСЯЦ', 'ПУТЬ', 'KM', 'М', 'БАЛЛ']:
+                    for col in ['ГОД', 'МЕСЯЦ', 'ДЕНЬ', 'ПУТЬ', 'KM', 'М', 'БАЛЛ']:
                         if col in df_otst_single.columns:
                             df_otst_single[col] = pd.to_numeric(df_otst_single[col], errors='coerce')
                     
@@ -85,24 +102,56 @@ if uploaded_files:
             st.session_state.df_km_all = pd.concat(km_list, ignore_index=True)
             st.session_state.df_otst_all = pd.concat(otst_list, ignore_index=True)
             st.sidebar.success(f"📥 База данных собрана! Файлов: {success_count} шт.")
-        else:
-            st.sidebar.error("Нужные листы не найдены.")
 
-# Параметры фильтрации
-st.sidebar.header("⚙️ Настройки отчета")
-current_month = st.sidebar.slider("Прогнозный месяц (сезон):", 1, 12, int(datetime.datetime.now().month))
+# --- ГИБКИЕ НАСТРОЙКИ ВРЕМЕННЫХ ПЕРИОДОВ ---
+st.sidebar.header("⚙️ Временной интервал расчета")
+
+# 1. Выбор режима (План на проезд или Ретро-тест)
+mode = st.sidebar.radio("Режим работы:", ["🔮 План на следующий проезд", "🧪 Ретро-тестирование (Архив)"])
+
+if mode == "🔮 План на следующий проезд":
+    # Жестко выставляем автоматически вычисленный следующий период
+    target_month = default_month
+    selected_dekada_text = default_dekada
+    st.sidebar.info(f"Автоматический фокус на ближайший проезд:\nМесяц: **{target_month}**, **{selected_dekada_text}**")
+else:
+    # Открываем полные фильтры для тестирования прошлых периодов
+    target_month = st.sidebar.slider("Выбрать исторический месяц:", 1, 12, int(current_month))
+    selected_dekada_text = st.sidebar.selectbox(
+        "Выбрать историческую декаду:", 
+        ["1 декада (1-10 число)", "2 декада (11-20 число)", "3 декада (21-31 число)"]
+    )
+
 threshold_ball = st.sidebar.number_input("Критический порог баллов:", value=50, step=5)
 
-# --- ОСНОВНОЙ БЛОК ОБРАБОТКИ И ВЫГРУЗКИ ---
+# Конвертируем текстовый выбор декады в числовые границы дней
+if "1 декада" in selected_dekada_text:
+    day_min, day_max = 1, 10
+elif "2 декада" in selected_dekada_text:
+    day_min, day_max = 11, 20
+else:
+    day_min, day_max = 21, 31
+
+# --- ОБРАБОТКА ДАННЫХ С УЧЕТОМ ДЕКАДЫ ---
 if st.session_state.df_km_all is not None:
-    # Делаем быстрый срез по выбранному месяцу
-    hist_km = st.session_state.df_km_all[st.session_state.df_km_all['МЕСЯЦ'] == current_month].dropna(subset=['КОДНАПР', 'ПУТЬ', 'KM', 'БАЛЛ']).copy()
-    hist_otst = st.session_state.df_otst_all[st.session_state.df_otst_all['МЕСЯЦ'] == current_month].dropna(subset=['КОДНАПР', 'ПУТЬ', 'KM']).copy()
+    
+    # Фильтрация по месяцу И по диапазону дней декады
+    hist_km = st.session_state.df_km_all[
+        (st.session_state.df_km_all['МЕСЯЦ'] == target_month) & 
+        (st.session_state.df_km_all['ДЕНЬ'] >= day_min) & 
+        (st.session_state.df_km_all['ДЕНЬ'] <= day_max)
+    ].dropna(subset=['КОДНАПР', 'ПУТЬ', 'KM', 'БАЛЛ']).copy()
+    
+    hist_otst = st.session_state.df_otst_all[
+        (st.session_state.df_otst_all['МЕСЯЦ'] == target_month) & 
+        (st.session_state.df_otst_all['ДЕНЬ'] >= day_min) & 
+        (st.session_state.df_otst_all['ДЕНЬ'] <= day_max)
+    ].dropna(subset=['КОДНАПР', 'ПУТЬ', 'KM']).copy()
     
     if hist_km.empty:
-        st.warning(f"В загруженном архиве нет данных для месяца № {current_month}.")
+        st.warning(f"⚠️ В загруженном архиве нет исторических записей для выбранного периода (Месяц {target_month}, {selected_dekada_text}).")
     else:
-        # 1. СТРАТЕГИЧЕСКИЙ СЛОЙ (Оценка КМ)
+        # Стратегический слой (Оценка КМ за конкретную декаду прошлых лет)
         km_profile = hist_km.groupby(['КОДНАПР', 'ПУТЬ', 'KM']).agg(
             Ср_Балл=('БАЛЛ', 'mean'),
             Макс_Балл=('БАЛЛ', 'max'),
@@ -115,67 +164,51 @@ if st.session_state.df_km_all is not None:
         dangerous_kms = km_profile[(km_profile['Ср_Балл'] >= threshold_ball) | (km_profile['Превышений'] >= 2)].sort_values(by='Ср_Балл', ascending=False).copy()
         
         if dangerous_kms.empty:
-            st.success("🎉 Все километры стабильны! Рисков предотказов на этот месяц не выявлено.")
+            st.success(f"🎉 Для периода [Месяц: {target_month}, {selected_dekada_text}] рисков предотказов не обнаружено. Все участки стабильны!")
         else:
-            st.info(f"📊 В зоне риска обнаружено {len(dangerous_kms)} км. Нажмите кнопку ниже для генерации комплексного Excel-отчета.")
+            st.info(f"📊 Обнаружено {len(dangerous_kms)} км в зоне риска для интервала: Месяц {target_month}, {selected_dekada_text}.")
             
-            # --- КНОПКА ГЕНЕРАЦИИ EXCEL ---
-            if st.button("📊 Сгенерировать комплексный отчет Excel"):
-                
-                # Подготовка ТАКТИЧЕСКОГО СЛОЯ (Причины и адресность)
+            # --- КНОПКА EXCEL ---
+            if st.button("📊 Сгенерировать комплексный отчет Excel по декаде"):
                 summary_rows = []
                 assignment_rows = []
                 
-                # Чтобы не делать тяжелых циклов в Streamlit, обрабатываем только проблемные КМ быстрым вектором
                 for _, row in dangerous_kms.iterrows():
                     dkod, put, km = row['КОДНАПР'], row['ПУТЬ'], row['KM']
-                    
-                    # Фильтруем точечные отступления
                     defects = hist_otst[(hist_otst['КОДНАПР'] == dkod) & (hist_otst['ПУТЬ'] == put) & (hist_otst['KM'] == km)].copy()
                     
-                    reason_text = "Общая усталость балластной призмы"
+                    reason_text = "Сезонная нестабильность земляного полотна"
                     main_threat = "Не определено"
                     crit_meters_text = "0 - 1000"
                     
                     if not defects.empty:
                         defects['ОТСТУПЛЕНИЕ'] = defects['ОТСТУПЛЕНИЕ'].astype(str).str.strip()
-                        
-                        # Определяем главную причину
                         structure = defects.groupby('ОТСТУПЛЕНИЕ').agg(Сумма=('БАЛЛ', 'sum')).sort_values(by='Сумма', ascending=False)
                         if not structure.empty:
                             main_threat = structure.index[0]
                             
-                        # Определяем критические метры
                         defects['Участок'] = (defects['М'] // 100) * 100
                         density = defects.groupby('Участок').agg(Баллы=('БАЛЛ', 'sum')).sort_values(by='Баллы', ascending=False)
                         if not density.empty:
                             m_start = int(density.index[0])
                             crit_meters_text = f"{m_start} - {m_start + 100}"
                         
-                        reason_text = f"Хронический рост дефектов типа [{main_threat}] на интервале {crit_meters_text} м."
+                        reason_text = f"Декадный всплеск отступлений типа [{main_threat}] на интервале {crit_meters_text} м."
                     
-                    # Заполняем 1 вкладку (Сводная)
                     summary_rows.append({
                         'Код направления': int(dkod),
                         'Дорожный мастер (ПД)': f"ПД-{int(row['ПД'])}",
                         'Номер пути': int(put),
                         'Километр': int(km),
-                        'Исторический ср. балл': round(row['Ср_Балл'], 1),
-                        'Пиковый балл в этот сезон': int(row['Макс_Балл']),
-                        'Вероятность отказа (%)': row['Повторяемость_%'],
+                        'Исторический ср. балл (декадный)': round(row['Ср_Балл'], 1),
+                        'Пиковый балл в эту декаду': int(row['Макс_Балл']),
+                        'Вероятность отказа в декаде (%)': row['Повторяемость_%'],
                         'Цифровой диагноз (Причина риска)': reason_text
                     })
                     
-                    # Заполняем 2 вкладку (Адресные наряды для линии)
                     if not defects.empty:
-                        # Показываем путейскую сортировку по метрам для нарядов
-                        density_all = defects.groupby('Участок').agg(
-                            Баллы=('БАЛЛ', 'sum'),
-                            Кол=('БАЛЛ', 'count')
-                        ).sort_index()
-                        
+                        density_all = defects.groupby('Участок').agg(Баллы=('БАЛЛ', 'sum'), Кол=('БАЛЛ', 'count')).sort_index()
                         for u_metr, d_row in density_all.iterrows():
-                            # Ищем преобладающий дефект на этой сотне метров
                             sub_defects = defects[defects['Участок'] == u_metr]
                             loc_threat = sub_defects.groupby('ОТСТУПЛЕНИЕ').agg(s=('БАЛЛ', 'sum')).sort_values(by='s', ascending=False).index[0]
                             
@@ -193,18 +226,17 @@ if st.session_state.df_km_all is not None:
                 df_excel_sheet1 = pd.DataFrame(summary_rows)
                 df_excel_sheet2 = pd.DataFrame(assignment_rows)
                 
-                # Запись в буфер памяти
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     df_excel_sheet1.to_excel(writer, sheet_name='Сводный отчет по ПЧ', index=False)
                     df_excel_sheet2.to_excel(writer, sheet_name='Адресные задания для ПД', index=False)
                 
-                st.success("🎉 Отчет успешно сформирован!")
+                st.success("🎉 Точечный декадный отчет сформирован!")
                 st.download_button(
-                    label="📥 Скачать предотказную ведомость в Excel",
+                    label="📥 Скачать декадную ведомость в Excel",
                     data=output.getvalue(),
-                    file_name=f"Предотказы_ПЧ_месяц_{current_month}.xlsx",
+                    file_name=f"Предотказы_Декада_Месяц_{target_month}_Срез_{day_min}_{day_max}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 else:
-    st.info("Вы можете использовать демонстрационные данные боковой панели или загрузить свои архивы Excel.")
+    st.info("Загрузите архивы путеизмерителя прошлых лет для автоматического формирования прогноза.")
