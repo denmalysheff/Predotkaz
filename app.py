@@ -7,7 +7,7 @@ import datetime
 st.set_page_config(page_title="Комбайн-П: Предотказ", layout="wide")
 
 st.title("🚂 Модуль «Комбайн-П: Предотказ»")
-st.markdown("### Анализ сезонных рисков геометрии пути на основе архивов путеизмерителя")
+st.markdown("### Анализ сезонных рисков геометрии пути на основе архивных отчетов Excel")
 
 # --- ФУНКЦИИ ЗАГРУЗКИ И ДЕМО-ДАННЫХ ---
 @st.cache_data
@@ -59,19 +59,20 @@ def get_demo_data():
     df_otst = pd.DataFrame(otst_rows)
     return df_km, df_otst
 
-# --- БОКОВАЯ ПАНЕЛЬ ---
-st.sidebar.header("📁 Загрузка архивных CSV")
-uploaded_km = st.sidebar.file_uploader("Шаг 1: Файл 'Оценка КМ'", type="csv")
-uploaded_otst = st.sidebar.file_uploader("Шаг 2: Файл 'Отступления'", type="csv")
+# --- БОКОВАЯ ПАНЕЛЬ С ВЫБОРОМ EXCEL ---
+st.sidebar.header("📁 Загрузка архивных Excel (.xlsx)")
+uploaded_km = st.sidebar.file_uploader("Шаг 1: Файл 'Оценка КМ'", type=["xlsx"])
+uploaded_otst = st.sidebar.file_uploader("Шаг 2: Файл 'Отступления'", type=["xlsx"])
 
 if uploaded_km and uploaded_otst:
     try:
-        # Читаем пользовательские файлы
-        df_km_raw = pd.read_csv(uploaded_km)
-        df_otst_raw = pd.read_csv(uploaded_otst)
-        st.sidebar.success("Ваши файлы успешно применены!")
+        # Читаем файлы Excel. 
+        # Если ваши данные лежат не на первом листе, можно добавить параметр sheet_name='ИмяЛиста'
+        df_km_raw = pd.read_excel(uploaded_km)
+        df_otst_raw = pd.read_excel(uploaded_otst)
+        st.sidebar.success("Файлы Excel успешно загружены!")
     except Exception as e:
-        st.sidebar.error(f"Ошибка: {e}. Загружены демо-данные.")
+        st.sidebar.error(f"Ошибка чтения Excel: {e}. Загружены демо-данные.")
         df_km_raw, df_otst_raw = get_demo_data()
 else:
     st.sidebar.info("Используются встроенные демонстрационные данные для ПЧ-22.")
@@ -92,7 +93,7 @@ df_otst_raw.columns = df_otst_raw.columns.str.strip().str.upper()
 if 'КОДНАПРВ' in df_otst_raw.columns:
     df_otst_raw = df_otst_raw.rename(columns={'КОДНАПРВ': 'КОДНАПР'})
 
-# Принудительно чистим текстовые ячейки во избежание скрытых пробелов
+# Принудительно переводим ключевые координаты в числа (на случай, если в Excel они определились как текст)
 for df in [df_km_raw, df_otst_raw]:
     for col in ['КОДНАПР', 'ПУТЬ', 'KM', 'МЕСЯЦ']:
         if col in df.columns:
@@ -132,7 +133,6 @@ else:
     else:
         st.subheader("📋 Сводная ведомость километров с высоким риском неисправностей")
         
-        # Округляем средние баллы для красоты отображения
         dangerous_kms['Ср_Балл'] = dangerous_kms['Ср_Балл'].round(1)
         
         st.dataframe(dangerous_kms[[
@@ -145,7 +145,6 @@ else:
 
         st.subheader("🔍 Что проверить бригаде на линии?")
         
-        # Выпадающий список выбора опасного километра
         dangerous_kms['label'] = "Направление " + dangerous_kms['КОДНАПР'].astype(int).astype(str) + ", Путь " + dangerous_kms['ПУТЬ'].astype(int).astype(str) + ", Км " + dangerous_kms['KM'].astype(int).astype(str)
         selected_label = st.selectbox("Выберите километр из списка для детальной раскладки:", dangerous_kms['label'].unique())
         
@@ -161,7 +160,6 @@ else:
         if km_defects.empty:
             st.info("💡 Для данного километра нет детализированных записей по отдельным отступлениям в таблице 'Отступления'. Используйте общую статистику баллов.")
         else:
-            # Приводим названия дефектов к единому виду (удаляем пробелы по краям)
             if 'ОТСТУПЛЕНИЕ' in km_defects.columns:
                 km_defects['ОТСТУПЛЕНИЕ'] = km_defects['ОТСТУПЛЕНИЕ'].astype(str).str.strip()
             
@@ -183,11 +181,9 @@ else:
                     Количество=('БАЛЛ', 'count')
                 ).sort_values(by='Баллы', ascending=False).reset_index()
                 
-                # Форматируем вывод метров для путейцев
                 density['Интервал (м)'] = density['Участок_Метры'].astype(int).astype(str) + " - " + (density['Участок_Метры'] + 100).astype(int).astype(str)
                 st.dataframe(density[['Интервал (м)', 'Баллы', 'Количество']].rename(columns={'Баллы': 'Сумма баллов', 'Количество': 'Кол-во дефектов'}), use_container_width=True, hide_index=True)
 
-            # Автоматическая генерация понятного вывода для ПДБ
             if not structure.empty and not density.empty:
                 main_threat = structure.iloc[0]['Вид неисправности']
                 crit_meters = density.iloc[0]['Интервал (м)']
